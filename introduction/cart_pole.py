@@ -17,11 +17,20 @@ CURRICULUM = [
 
 CHUNK_STEPS     = 25_000    # steps trained between evals
 MAX_PHASE_STEPS = 400_000   # fallback cap so a phase can't loop forever
-N_EVAL_EPISODES = 5         # average several episodes — wind is stochastic
+N_EVAL_EPISODES = 10        # average several episodes — wind is stochastic
+
+
+# LR is driven by a mutable box we update each chunk (SB3 re-reads the schedule
+# every train iteration). We decay it *within* each phase and reset it at the
+# start of every phase — so each phase starts with a high LR to learn the new
+# wind, then settles to avoid the climb-then-overshoot wobble we saw.
+LR_MAX = 3e-4
+LR_MIN_FRAC = 0.1
+lr_box = {"lr": LR_MAX}
 
 train_env = WindyCartPole(wind_mean=0.0, wind_std=0.0)
 eval_env  = WindyCartPole(wind_mean=0.0, wind_std=0.0)   # headless
-model     = PPO("MlpPolicy", train_env, verbose=0)
+model     = PPO("MlpPolicy", train_env, learning_rate=lambda _: lr_box["lr"], verbose=0)
 
 
 def set_wind(mean, std):
@@ -52,6 +61,11 @@ for label, mean, std, advance_score in CURRICULUM:
 
     phase_steps = 0
     while True:
+        # Linear LR decay within the phase: LR_MAX → LR_MAX*LR_MIN_FRAC,
+        # floored so late-phase learning doesn't fully stall. Resets each phase.
+        frac = max(LR_MIN_FRAC, 1.0 - phase_steps / MAX_PHASE_STEPS)
+        lr_box["lr"] = LR_MAX * frac
+
         model.learn(total_timesteps=CHUNK_STEPS, reset_num_timesteps=False)
         phase_steps += CHUNK_STEPS
 

@@ -55,7 +55,10 @@ class WindyCartPole(gym.Env):
         ], dtype=np.float32)
 
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
-        self.action_space      = spaces.Discrete(2)
+        # Continuous force in [-1, 1], scaled to ±force_mag. Lets the agent
+        # apply partial force — e.g. exactly cancel a steady wind — instead of
+        # bang-bang ±10N, which can't gently oppose a constant push.
+        self.action_space      = spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
 
     # ------------------------------------------------------------------
 
@@ -72,7 +75,9 @@ class WindyCartPole(gym.Env):
         x, x_dot, theta, theta_dot = self.state
         self.wind_force = self._sample_wind()
 
-        force      = self.force_mag if action == 1 else -self.force_mag
+        # Continuous action in [-1, 1] → force in [-force_mag, +force_mag]
+        a          = float(np.clip(action, -1.0, 1.0))
+        force      = a * self.force_mag
         cart_force = force + self.wind_force  # wind pushes cart laterally
 
         costheta = np.cos(theta)
