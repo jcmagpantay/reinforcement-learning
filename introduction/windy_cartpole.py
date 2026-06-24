@@ -27,13 +27,17 @@ class WindyCartPole(gym.Env):
 
     x_threshold      = 2.4
     theta_threshold  = 12 * np.pi / 180  # radians
+    max_steps        = 500               # truncate like CartPole-v1 (the "solved" ceiling)
 
-    def __init__(self, render_mode=None, wind_mean=2.0, wind_std=1.5):
+    def __init__(self, render_mode=None, wind_mean=1.0, wind_std=0.5, wind_gust=0.85,
+                 pole_wind_coef=0.1):
         super().__init__()
 
-        self.wind_mean   = wind_mean
-        self.wind_std    = wind_std
-        self.wind_force  = 0.0
+        self.wind_mean      = wind_mean       # average wind force on cart (N)
+        self.wind_std       = wind_std        # gust volatility
+        self.wind_gust      = wind_gust       # AR(1) persistence: 0=white noise, →1=slow gusts
+        self.pole_wind_coef = pole_wind_coef  # fraction of wind the pole catches (smaller cross-section)
+        self.wind_force     = 0.0
         self.render_mode = render_mode
         self.screen      = None
         self.clock       = None
@@ -58,7 +62,8 @@ class WindyCartPole(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.state      = self.np_random.uniform(-0.05, 0.05, size=(4,))
-        self.wind_force = self._sample_wind()
+        self.wind_force = self._reset_wind()
+        self.steps      = 0
         if self.render_mode == "human":
             self._render_frame()
         return self._obs(), {}
@@ -73,15 +78,19 @@ class WindyCartPole(gym.Env):
         costheta = np.cos(theta)
         sintheta = np.sin(theta)
 
-        # Standard CartPole equations of motion
-        temp     = (cart_force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
-        thetaacc = (self.gravity * sintheta - costheta * temp) / \
-                   (self.length * (4.0/3.0 - self.masspole * costheta**2 / self.total_mass))
+        # Wind pushes the pole directly too. A horizontal force at the pole's
+        # center of mass makes a torque ∝ cosθ. It enters the thetaacc numerator
+        # normalized by (m_p·l), exactly like the gravity term g·sinθ:
+        #   gravity term:  g·sinθ          (vertical force → sinθ)
+        #   wind term:    (F_pole/m_p)·cosθ (horizontal force → cosθ)
+        # The pole catches only a fraction of the wind (pole_wind_coef), so its
+        # acceleration stays comparable to gravity instead of overwhelming it.
+        pole_wind = self.pole_wind_coef * self.wind_force
+        wind_term = (pole_wind / self.masspole) * costheta
 
-        # Wind also torques the pole: horizontal force at pole midpoint
-        # τ = F_wind * length * cos(θ),  α_wind = τ / (m * l² * 4/3)
-        thetaacc += (self.wind_force * costheta) / \
-                    (self.masspole * self.length * (4.0/3.0))
+        temp     = (cart_force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
+        thetaacc = (self.gravity * sintheta - costheta * temp + wind_term) / \
+                   (self.length * (4.0/3.0 - self.masspole * costheta**2 / self.total_mass))
 
         xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
 
@@ -93,22 +102,43 @@ class WindyCartPole(gym.Env):
 
         self.state = np.array([x, x_dot, theta, theta_dot])
 
+        self.steps += 1
         terminated = bool(
             abs(x)     > self.x_threshold or
             abs(theta) > self.theta_threshold
         )
+        truncated = self.steps >= self.max_steps
 
-        reward = 1.0 - 0.5 * abs(x) - 0.3 * abs(theta)
+        # Survival dominates (base 1.0); gentle shaping nudges toward center
+        # and upright. Light weights so the cart stays free to move against
+        # the wind — a heavy position penalty would discourage the very
+        # motion it needs to balance. Reward stays in ~[0.65, 1.0].
+        reward = 1.0 \
+                 - 0.25 * (x / self.x_threshold) ** 2 \
+                 - 0.10 * (theta / self.theta_threshold) ** 2
 
         if self.render_mode == "human":
             self._render_frame()
 
-        return self._obs(), reward, terminated, False, {"wind": self.wind_force}
+        return self._obs(), reward, terminated, truncated, {"wind": self.wind_force}
 
     # ------------------------------------------------------------------
 
     def _sample_wind(self):
-        return float(self.np_random.normal(self.wind_mean, self.wind_std))
+        # AR(1) gust process: wind drifts from its last value toward the mean,
+        # plus a small random kick. Produces correlated gusts the agent can
+        # actually anticipate, unlike i.i.d. white noise.
+        kick = self.np_random.normal(0.0, self.wind_std)
+        self.wind_force = (
+            self.wind_mean
+            + self.wind_gust * (self.wind_force - self.wind_mean)
+            + kick
+        )
+        return self.wind_force
+
+    def _reset_wind(self):
+        self.wind_force = self.wind_mean
+        return self.wind_force
 
     def _obs(self):
         return np.append(self.state, self.wind_force).astype(np.float32)

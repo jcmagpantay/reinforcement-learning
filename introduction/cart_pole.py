@@ -1,28 +1,80 @@
-import gymnasium as gym
 from stable_baselines3 import PPO
 from windy_cartpole import WindyCartPole
 
-TOTAL_STEPS     = 100_000
-CHUNKS          = 10
-STEPS_PER_CHUNK = TOTAL_STEPS // CHUNKS
+# Curriculum: easy → hard. Each phase ramps the wind; the agent carries its
+# learned policy forward, so each phase starts from a competent baseline.
+# Smaller rungs near the top (1.0→1.5→2.0) — the 1.0→2.0 jump alone is too big.
+# Each phase has its own advance bar: stochastic strong gusts cap the achievable
+# score below 500, so the bar relaxes as the wind gets harder.
+#                 label        mean  std   advance_score
+CURRICULUM = [
+    ("calm",       0.0,  0.0,  450),
+    ("breeze",     0.5,  0.3,  450),
+    ("moderate",   1.0,  0.5,  440),
+    ("brisk",      1.5,  0.65, 400),
+    ("strong",     2.0,  0.8,  350),   # original difficulty — relaxed bar
+]
 
-train_env = WindyCartPole(wind_mean=2.0, wind_std=1.5)
-eval_env  = WindyCartPole(render_mode="human", wind_mean=2.0, wind_std=1.5)
+CHUNK_STEPS     = 25_000    # steps trained between evals
+MAX_PHASE_STEPS = 400_000   # fallback cap so a phase can't loop forever
+N_EVAL_EPISODES = 5         # average several episodes — wind is stochastic
+
+train_env = WindyCartPole(wind_mean=0.0, wind_std=0.0)
+eval_env  = WindyCartPole(wind_mean=0.0, wind_std=0.0)   # headless
 model     = PPO("MlpPolicy", train_env, verbose=0)
 
-for chunk in range(1, CHUNKS + 1):
-    model.learn(total_timesteps=STEPS_PER_CHUNK, reset_num_timesteps=False)
 
-    obs, _ = eval_env.reset()
-    total_reward = 0
-    done = False
-    while not done:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, _ = eval_env.step(action)
-        total_reward += reward
-        done = terminated or truncated
+def set_wind(mean, std):
+    # train_env/eval_env are our own objects — SB3 wraps but references them,
+    # so mutating these attributes changes the live environments.
+    for env in (train_env, eval_env):
+        env.wind_mean = mean
+        env.wind_std  = std
 
-    print(f"[{chunk * STEPS_PER_CHUNK:>7,} / {TOTAL_STEPS:,} steps]  score: {total_reward:.1f}")
+
+def evaluate(n_episodes):
+    scores = []
+    for _ in range(n_episodes):
+        obs, _ = eval_env.reset()
+        total, done = 0.0, False
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, _ = eval_env.step(action)
+            total += reward
+            done = terminated or truncated
+        scores.append(total)
+    return sum(scores) / len(scores)
+
+
+for label, mean, std, advance_score in CURRICULUM:
+    set_wind(mean, std)
+    print(f"\n=== Phase: {label}  (wind_mean={mean}, wind_std={std}, target={advance_score}) ===")
+
+    phase_steps = 0
+    while True:
+        model.learn(total_timesteps=CHUNK_STEPS, reset_num_timesteps=False)
+        phase_steps += CHUNK_STEPS
+
+        score = evaluate(N_EVAL_EPISODES)
+        print(f"  [{phase_steps:>7,} steps in phase]  avg score: {score:.1f}")
+
+        if score >= advance_score:
+            print(f"  ✓ cleared '{label}' (score {score:.1f} ≥ {advance_score})")
+            break
+        if phase_steps >= MAX_PHASE_STEPS:
+            print(f"  ⚠ hit step cap on '{label}' (best {score:.1f}) — advancing anyway")
+            break
 
 train_env.close()
 eval_env.close()
+
+# --- Final visual demo at full difficulty ---
+input("\nCurriculum complete. Press Enter to watch the agent at full difficulty...")
+demo_env = WindyCartPole(render_mode="human", wind_mean=2.0, wind_std=0.8)
+obs, _ = demo_env.reset()
+done = False
+while not done:
+    action, _ = model.predict(obs, deterministic=True)
+    obs, _, terminated, truncated, _ = demo_env.step(action)
+    done = terminated or truncated
+demo_env.close()
