@@ -6,13 +6,20 @@ from windy_cartpole import WindyCartPole
 # Smaller rungs near the top (1.0→1.5→2.0) — the 1.0→2.0 jump alone is too big.
 # Each phase has its own advance bar: stochastic strong gusts cap the achievable
 # score below 500, so the bar relaxes as the wind gets harder.
-#                 label        mean  std   advance_score
+#
+# NOTE: `std` is the AR(1) per-step kick, NOT the effective volatility. The gust
+# process amplifies variance by 1/√(1−gust²) ≈ 1.9x. These kicks are calibrated
+# (= intended_effective_std × √(1−0.85²)) so the *effective* std matches the
+# intended values below — i.e. `strong` now equals true original difficulty
+# (effective std 0.8) instead of the ~1.5 it was secretly running at.
+#                 label        mean  kick   advance_score   # intended eff. std
 CURRICULUM = [
-    ("calm",       0.0,  0.0,  450),
-    ("breeze",     0.5,  0.3,  450),
-    ("moderate",   1.0,  0.5,  440),
-    ("brisk",      1.5,  0.65, 400),
-    ("strong",     2.0,  0.8,  350),   # original difficulty — relaxed bar
+    ("calm",       0.0,  0.0,   450),                        # 0.0
+    ("breeze",     0.5,  0.16,  450),                        # 0.3
+    ("moderate",   1.0,  0.26,  440),                        # 0.5
+    ("brisk",      1.5,  0.34,  400),                        # 0.65
+    ("gale",       1.75, 0.38,  375),                        # 0.72
+    ("strong",     2.0,  0.42,  350),                        # 0.8 (= original)
 ]
 
 CHUNK_STEPS     = 25_000    # steps trained between evals

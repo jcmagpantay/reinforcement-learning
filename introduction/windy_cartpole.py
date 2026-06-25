@@ -75,8 +75,9 @@ class WindyCartPole(gym.Env):
         x, x_dot, theta, theta_dot = self.state
         self.wind_force = self._sample_wind()
 
-        # Continuous action in [-1, 1] → force in [-force_mag, +force_mag]
-        a          = float(np.clip(action, -1.0, 1.0))
+        # Continuous action in [-1, 1] → force in [-force_mag, +force_mag].
+        # action is a shape-(1,) array; take element 0.
+        a          = float(np.clip(action, -1.0, 1.0).reshape(-1)[0])
         force      = a * self.force_mag
         cart_force = force + self.wind_force  # wind pushes cart laterally
 
