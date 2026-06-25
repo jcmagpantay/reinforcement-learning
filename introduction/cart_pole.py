@@ -25,6 +25,8 @@ CURRICULUM = [
 CHUNK_STEPS     = 25_000    # steps trained between evals
 MAX_PHASE_STEPS = 400_000   # fallback cap so a phase can't loop forever
 N_EVAL_EPISODES = 10        # average several episodes — wind is stochastic
+ADVANCE_STREAK  = 3         # require this many consecutive evals over the bar
+                            # before advancing — kills lucky-spike advancement
 
 
 # LR is driven by a mutable box we update each chunk (SB3 re-reads the schedule
@@ -67,6 +69,7 @@ for label, mean, std, advance_score in CURRICULUM:
     print(f"\n=== Phase: {label}  (wind_mean={mean}, wind_std={std}, target={advance_score}) ===")
 
     phase_steps = 0
+    streak = 0   # consecutive evals clearing the bar — guards against lucky spikes
     while True:
         # Linear LR decay within the phase: LR_MAX → LR_MAX*LR_MIN_FRAC,
         # floored so late-phase learning doesn't fully stall. Resets each phase.
@@ -77,13 +80,16 @@ for label, mean, std, advance_score in CURRICULUM:
         phase_steps += CHUNK_STEPS
 
         score = evaluate(N_EVAL_EPISODES)
-        print(f"  [{phase_steps:>7,} steps in phase]  avg score: {score:.1f}")
+        streak = streak + 1 if score >= advance_score else 0
+        print(f"  [{phase_steps:>7,} steps in phase]  avg score: {score:.1f}"
+              f"   (streak {streak}/{ADVANCE_STREAK})")
 
-        if score >= advance_score:
-            print(f"  ✓ cleared '{label}' (score {score:.1f} ≥ {advance_score})")
+        # Advance only on sustained performance, not a single lucky eval.
+        if streak >= ADVANCE_STREAK:
+            print(f"  ✓ cleared '{label}' ({ADVANCE_STREAK} consecutive evals ≥ {advance_score})")
             break
         if phase_steps >= MAX_PHASE_STEPS:
-            print(f"  ⚠ hit step cap on '{label}' (best {score:.1f}) — advancing anyway")
+            print(f"  ⚠ hit step cap on '{label}' (best this run {score:.1f}) — advancing anyway")
             break
 
 train_env.close()
