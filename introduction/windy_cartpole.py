@@ -30,13 +30,13 @@ class WindyCartPole(gym.Env):
     max_steps        = 500               # truncate like CartPole-v1 (the "solved" ceiling)
 
     def __init__(self, render_mode=None, wind_mean=1.0, wind_std=0.5, wind_gust=0.85,
-                 pole_wind_coef=0.1):
+                 pole_wind_coef=0.0):
         super().__init__()
 
         self.wind_mean      = wind_mean       # average wind force on cart (N)
         self.wind_std       = wind_std        # gust volatility
         self.wind_gust      = wind_gust       # AR(1) persistence: 0=white noise, →1=slow gusts
-        self.pole_wind_coef = pole_wind_coef  # fraction of wind the pole catches (smaller cross-section)
+        self.pole_wind_coef = pole_wind_coef  # fraction of wind the pole catches (0 = pole feels no wind torque)
         self.wind_force     = 0.0
         self.render_mode = render_mode
         self.screen      = None
@@ -84,13 +84,13 @@ class WindyCartPole(gym.Env):
         costheta = np.cos(theta)
         sintheta = np.sin(theta)
 
-        # Wind pushes the pole directly too. A horizontal force at the pole's
-        # center of mass makes a torque ∝ cosθ. It enters the thetaacc numerator
-        # normalized by (m_p·l), exactly like the gravity term g·sinθ:
-        #   gravity term:  g·sinθ          (vertical force → sinθ)
-        #   wind term:    (F_pole/m_p)·cosθ (horizontal force → cosθ)
-        # The pole catches only a fraction of the wind (pole_wind_coef), so its
-        # acceleration stays comparable to gravity instead of overwhelming it.
+        # Wind can also push the pole directly via a horizontal force at its
+        # center of mass, making a torque ∝ cosθ that enters the thetaacc
+        # numerator normalized by m_p, like the gravity term g·sinθ. With
+        # pole_wind_coef=0 (default) this is disabled — the pole feels no wind
+        # torque, only the cart does. Disabled because at high wind the passive
+        # balancing lean (arcsin(wind/g)) approached the 12° termination angle,
+        # leaving no gust margin and making the task near-uncontrollable.
         pole_wind = self.pole_wind_coef * self.wind_force
         wind_term = (pole_wind / self.masspole) * costheta
 
